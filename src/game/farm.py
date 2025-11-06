@@ -216,6 +216,33 @@ class Farm:
                 except Exception:
                     pass
 
+        # harvest tree apples if overlapping
+        try:
+            for tree in list(self.tree_sprites.sprites()):
+                # each tree has an apple_sprites group
+                apples = getattr(tree, "apple_sprites", None)
+                if apples is None:
+                    continue
+                for a in list(apples.sprites()):
+                    if a.rect.colliderect(self.player.hitbox):
+                        # give apple to player
+                        app_id = getattr(a, "item_id", "apple")
+                        try:
+                            self.player.player_add(app_id, 1)
+                        except Exception:
+                            self.player.inventory[app_id] = self.player.inventory.get(app_id, 0) + 1
+                        try:
+                            a.kill()
+                        except Exception:
+                            pass
+                        if self.success:
+                            try:
+                                self.success.play()
+                            except Exception:
+                                pass
+        except Exception:
+            pass
+
     def reset_day(self):
         # Called at end of day
         self.soil.update_plants()

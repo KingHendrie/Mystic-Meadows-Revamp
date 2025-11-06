@@ -3,6 +3,8 @@ from __future__ import annotations
 import pygame
 from pygame.sprite import Sprite, Group
 from typing import Tuple, Callable
+from pathlib import Path
+from src.game.resources.resource_manager import import_folder
 import logging
 
 _logger = logging.getLogger("mystic_meadows.sprites")
@@ -21,9 +23,13 @@ class Generic(Sprite):
 
 
 class Water(Sprite):
-    def __init__(self, pos: Tuple[int,int], frames: list, groups: Tuple[Group,...]=(), z:int=2):
+    def __init__(self, pos: Tuple[int,int], frames: list | str | Path = None, groups: Tuple[Group,...]=(), z:int=2):
         super().__init__()
-        self.frames = frames or []
+        # frames may be a list of surfaces or a path to a folder
+        if isinstance(frames, (str, Path)):
+            self.frames = import_folder(frames)
+        else:
+            self.frames = frames or []
         self.index = 0
         self.image = self.frames[0] if self.frames else pygame.Surface((32,32))
         self.rect = self.image.get_rect(topleft=pos)
@@ -34,6 +40,7 @@ class Water(Sprite):
     def update(self, dt=0):
         if not self.frames:
             return
+        # advance based on dt if frames are present (simple frame-per-update)
         self.index = (self.index + 1) % len(self.frames)
         self.image = self.frames[self.index]
 

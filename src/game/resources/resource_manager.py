@@ -1,23 +1,45 @@
-"""Minimal ResourceManager: loads and caches images, fonts and sounds.
+"""Simple resource helpers: import_folder and image caching.
 
-This is a thin skeleton intended for development. It provides helpful errors
-if assets are missing and caches surfaces by key.
+This is a lightweight implementation used by the sprites module to
+load animation frames from a folder. It returns a list of pygame.Surface
+objects sorted by filename.
 """
 from __future__ import annotations
-
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+import pygame
+from typing import List
 import logging
 
+_cache: dict = {}
+
+
+def import_folder(folder: Path | str) -> List[pygame.Surface]:
+    p = Path(folder)
+    key = str(p)
+    if key in _cache:
+        return _cache[key]
+    frames: List[pygame.Surface] = []
+    if not p.exists() or not p.is_dir():
+        return frames
+    # sort by name for deterministic order
+    files = sorted([x for x in p.iterdir() if x.suffix.lower() in ('.png', '.jpg', '.bmp')])
+    for f in files:
+        try:
+            img = pygame.image.load(str(f)).convert_alpha()
+            frames.append(img)
+        except Exception:
+            # skip files that fail to load
+            continue
+    _cache[key] = frames
+    return frames
 _logger = logging.getLogger("mystic_meadows.resources")
 
 
 class ResourceManager:
-    def __init__(self, assets_dir: Optional[Path] = None):
+    def __init__(self, assets_dir: Path | None = None):
         self.assets_dir = Path(assets_dir) if assets_dir is not None else Path.cwd() / "assets"
-        self._images: Dict[str, Path] = {}
-        self._fonts: Dict[str, Path] = {}
-        # Sounds and other resources can be added similarly
+        self._images = {}
+        self._fonts = {}
 
     def resolve(self, path: str) -> Path:
         p = Path(path)
@@ -28,10 +50,8 @@ class ResourceManager:
             raise FileNotFoundError(f"Asset not found: {p}")
         return p
 
-    def load_image(self, key: str, path: str, tile_size: Optional[Tuple[int, int]] = None):
+    def load_image(self, key: str, path: str):
         p = self.resolve(path)
-        # We don't import pygame here to keep the manager lightweight; callers can load
-        # surfaces using pygame.image.load(p) or similar. We store the resolved path.
         self._images[key] = p
         return p
 
@@ -39,10 +59,10 @@ class ResourceManager:
         return self._images[key]
 
 
-_default_manager: Optional[ResourceManager] = None
+_default_manager: ResourceManager | None = None
 
 
-def get_default_manager(assets_dir: Optional[Path] = None) -> ResourceManager:
+def get_default_manager(assets_dir: Path | None = None) -> ResourceManager:
     global _default_manager
     if _default_manager is None:
         _default_manager = ResourceManager(assets_dir)
