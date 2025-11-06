@@ -1,6 +1,8 @@
 """Player sprite implementing movement and simple tool actions."""
 import pygame
 from typing import Optional
+from pygame.sprite import Group
+from typing import Tuple, Callable
 
 
 class Player(pygame.sprite.Sprite):
@@ -9,9 +11,12 @@ class Player(pygame.sprite.Sprite):
         self.id = id
         self.x = x
         self.y = y
+        # gameplay state
         self.money = 0
         self.energy = 100
+        # support both names used across the codebase
         self.inventory = {}
+        self.item_inventory = self.inventory
         self.speed = 120.0
 
         # visual
@@ -21,6 +26,17 @@ class Player(pygame.sprite.Sprite):
         self.hitbox = self.rect.copy()
         self.hitbox.inflate_ip(-8, -8)
         self.z = 4
+
+        # world references (attached later by Farm)
+        self.soil = None
+        self.collision_sprites: Optional[Group] = None
+        self.tree_sprites: Optional[Group] = None
+        self.interaction_sprites: Optional[Group] = None
+        self.toggle_shop: Optional[Callable[[bool], None]] = None
+
+        # action state
+        self.status = "idle"
+        self.sleep = False
 
     def update(self, dt: float, keys=None) -> None:
         dx = dy = 0.0
@@ -36,10 +52,47 @@ class Player(pygame.sprite.Sprite):
         if dx != 0 and dy != 0:
             dx *= 0.7071
             dy *= 0.7071
-        self.x += dx * self.speed * dt
-        self.y += dy * self.speed * dt
-        self.rect.center = (int(self.x), int(self.y))
-        self.hitbox.center = self.rect.center
+        # Attempt movement with collision resolution
+        nx = self.x + dx * self.speed * dt
+        ny = self.y + dy * self.speed * dt
+
+        # Move on x and check collisions
+        self.rect.centerx = int(nx)
+        self.hitbox.centerx = self.rect.centerx
+        collided = False
+        try:
+            if self.collision_sprites is not None:
+                for c in self.collision_sprites.sprites():
+                    if c.rect.colliderect(self.hitbox):
+                        collided = True
+                        break
+        except Exception:
+            collided = False
+        if not collided:
+            self.x = nx
+        else:
+            # revert x
+            self.rect.centerx = int(self.x)
+            self.hitbox.centerx = self.rect.centerx
+
+        # Move on y and check collisions
+        self.rect.centery = int(ny)
+        self.hitbox.centery = self.rect.centery
+        collided = False
+        try:
+            if self.collision_sprites is not None:
+                for c in self.collision_sprites.sprites():
+                    if c.rect.colliderect(self.hitbox):
+                        collided = True
+                        break
+        except Exception:
+            collided = False
+        if not collided:
+            self.y = ny
+        else:
+            # revert y
+            self.rect.centery = int(self.y)
+            self.hitbox.centery = self.rect.centery
 
     def use_tool_till(self, soil, tx: int, ty: int) -> bool:
         return soil.till(tx, ty)
@@ -57,4 +110,54 @@ class Player(pygame.sprite.Sprite):
 
     def try_harvest(self, soil) -> Optional[str]:
         return soil.harvest_at_rect(self.hitbox)
+
+    # New API helpers expected by farm and UI
+    def attach_world(self, soil, collision_sprites: Group, tree_sprites: Group, interaction_sprites: Group, toggle_shop: Callable[[bool], None]):
+        """Attach references to world systems so the player can interact."""
+        self.soil = soil
+        self.collision_sprites = collision_sprites
+        self.tree_sprites = tree_sprites
+        self.interaction_sprites = interaction_sprites
+        self.toggle_shop = toggle_shop
+
+    def use_tool(self, tool_name: str, tile_x: int, tile_y: int) -> bool:
+        """Generic tool dispatcher: 'hoe'|'water'|'plant'|'harvest'"""
+        if self.soil is None:
+            return False
+        if tool_name == "hoe":
+            return self.use_tool_till(self.soil, tile_x, tile_y)
+        if tool_name == "water":
+            return self.use_tool_water(self.soil, tile_x, tile_y)
+        if tool_name == "harvest":
+            res = self.try_harvest(self.soil)
+            if res:
+                # give to player inventory
+                self.inventory[res] = self.inventory.get(res, 0) + 1
+                return True
+            return False
+        return False
+
+    def interact(self):
+        """Check interaction sprites (bed/trader). If bed -> toggle day via shop toggle for now."""
+        try:
+            if self.interaction_sprites is None:
+                return None
+            for it in self.interaction_sprites.sprites():
+                if it.rect.colliderect(self.hitbox):
+                    name = getattr(it, "name", None)
+                    if name == "Trader":
+                        # open shop
+                        if self.toggle_shop:
+                            self.toggle_shop(True)
+                            return "trader"
+                    if name == "Bed":
+                        # signal sleep -> higher-level should start transition
+                        self.sleep = True
+                        return "bed"
+        except Exception:
+            return None
+        return None
+
+    def player_add(self, item_id: str, amount: int = 1):
+        self.inventory[item_id] = self.inventory.get(item_id, 0) + amount
 

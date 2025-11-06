@@ -52,6 +52,8 @@ class Farm:
         # Sprites and groups
         self.all_sprites = CameraGroup(window_size)
         self.collision_sprites = Group()
+        self.tree_sprites = Group()
+        self.interaction_sprites = Group()
 
         # Create a player at center
         px = window_size[0] // 2
@@ -77,6 +79,12 @@ class Farm:
         grid_w = window_size[0] // tile_size
         grid_h = window_size[1] // tile_size
         self.soil = SoilLayer(self.all_sprites, self.collision_sprites, tile_size, (grid_w, grid_h))
+
+        # Attach world references to player so it can call soil/interact
+        try:
+            self.player.attach_world(self.soil, self.collision_sprites, self.tree_sprites, self.interaction_sprites, self.toggle_shop)
+        except Exception:
+            pass
 
         # HUD state
         self.day = 1
