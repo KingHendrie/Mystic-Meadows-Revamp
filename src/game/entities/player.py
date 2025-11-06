@@ -3,10 +3,11 @@ import pygame
 from typing import Optional
 from pygame.sprite import Group
 from typing import Tuple, Callable
+from pathlib import Path
 
 
 class Player(pygame.sprite.Sprite):
-    def __init__(self, id: str = "player", x: float = 0.0, y: float = 0.0):
+    def __init__(self, id: str = "player", x: float = 0.0, y: float = 0.0, assets_dir: str | None = None):
         super().__init__()
         self.id = id
         self.x = x
@@ -19,9 +20,27 @@ class Player(pygame.sprite.Sprite):
         self.item_inventory = self.inventory
         self.speed = 120.0
 
-        # visual
-        self.image = pygame.Surface((32, 48), pygame.SRCALPHA)
-        pygame.draw.rect(self.image, (200, 180, 120), self.image.get_rect())
+        # visual: try to load an asset from assets_dir, otherwise fallback to simple block
+        surf = None
+        try:
+            if assets_dir is not None:
+                # attempt to find any character sprite under assets_dir/sprites/character
+                p = Path(assets_dir) / "sprites"
+                if p.exists():
+                    # find first png under sprites/character
+                    char_dir = p / "character"
+                    if char_dir.exists():
+                        files = list(char_dir.rglob("*.png"))
+                        if files:
+                            surf = pygame.image.load(str(files[0])).convert_alpha()
+        except Exception:
+            surf = None
+
+        if surf is None:
+            self.image = pygame.Surface((32, 48), pygame.SRCALPHA)
+            pygame.draw.rect(self.image, (255, 0, 255), self.image.get_rect())
+        else:
+            self.image = surf
         self.rect = self.image.get_rect(center=(int(self.x), int(self.y)))
         self.hitbox = self.rect.copy()
         self.hitbox.inflate_ip(-8, -8)

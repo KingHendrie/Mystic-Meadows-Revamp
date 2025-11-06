@@ -15,6 +15,7 @@ from pygame.sprite import Group, Sprite
 from src.game.config import DEFAULT_TILE_SIZE, DEFAULT_WINDOW_SIZE
 from src.game.soil import SoilLayer
 from src.game.entities.player import Player
+from src.game.sprites import Generic
 from src.game.systems.save_system import SaveSystem
 from src.game.ui.menu import Menu
 from src.game.transition import Transition
@@ -58,7 +59,7 @@ class Farm:
         # Create a player at center
         px = window_size[0] // 2
         py = window_size[1] // 2
-        self.player = Player(id="player", x=px, y=py)
+        self.player = Player(id="player", x=px, y=py, assets_dir=self.assets_dir)
         self.all_sprites.add(self.player)
 
         # Menu (shop) and transition controller
@@ -79,6 +80,26 @@ class Farm:
         grid_w = window_size[0] // tile_size
         grid_h = window_size[1] // tile_size
         self.soil = SoilLayer(self.all_sprites, self.collision_sprites, tile_size, (grid_w, grid_h))
+
+        # create simple ground tiles so the map is visible without TMX
+        try:
+            # attempt to load a ground tile from assets
+            ground_path = self.assets_dir / "sprites" / "world" / "ground.png"
+            if ground_path.exists():
+                ground_surf = pygame.image.load(str(ground_path)).convert_alpha()
+                ground_surf = pygame.transform.scale(ground_surf, (tile_size, tile_size))
+            else:
+                ground_surf = None
+            for x in range(grid_w):
+                for y in range(grid_h):
+                    if ground_surf is not None:
+                        surf = ground_surf
+                    else:
+                        surf = pygame.Surface((tile_size, tile_size))
+                        surf.fill((100, 180, 90))
+                    Generic((x * tile_size, y * tile_size), surf, (self.all_sprites,), z=1)
+        except Exception:
+            pass
 
         # Attach world references to player so it can call soil/interact
         try:
