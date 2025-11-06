@@ -279,6 +279,15 @@ class Farm:
 
     def render(self, surface: pygame.Surface):
         self.all_sprites.custom_draw(self.player, surface)
+        # debug: draw player rect and a small marker so we can see where the camera centers
+        try:
+            pygame.draw.rect(surface, (255, 0, 0), self.player.rect.move((self.window_size[0]//2 - self.player.rect.centerx, self.window_size[1]//2 - self.player.rect.centery)), 1)
+            # small center marker
+            cx = self.window_size[0] // 2
+            cy = self.window_size[1] // 2
+            pygame.draw.circle(surface, (0, 0, 255), (cx, cy), 3)
+        except Exception:
+            pass
         # simple HUD
         try:
             font = pygame.font.Font(None, 24)

@@ -46,6 +46,27 @@ class Player(pygame.sprite.Sprite):
             self.base_image = self.image.copy()
         except Exception:
             self.base_image = self.image
+
+        # try to find directional standalone images in assets_dir (left/right/up/down)
+        self.direction_frames = {}
+        try:
+            if assets_dir is not None:
+                char_dir = Path(assets_dir) / "sprites" / "character"
+                if char_dir.exists():
+                    # collect files
+                    for f in char_dir.iterdir():
+                        name = f.name.lower()
+                        if name.endswith('.png'):
+                            if 'left' in name:
+                                self.direction_frames['left'] = pygame.image.load(str(f)).convert_alpha()
+                            elif 'right' in name:
+                                self.direction_frames['right'] = pygame.image.load(str(f)).convert_alpha()
+                            elif 'up' in name:
+                                self.direction_frames['up'] = pygame.image.load(str(f)).convert_alpha()
+                            elif 'down' in name:
+                                self.direction_frames['down'] = pygame.image.load(str(f)).convert_alpha()
+        except Exception:
+            pass
         self.rect = self.image.get_rect(center=(int(self.x), int(self.y)))
         self.hitbox = self.rect.copy()
         self.hitbox.inflate_ip(-8, -8)
@@ -118,15 +139,31 @@ class Player(pygame.sprite.Sprite):
             self.rect.centery = int(self.y)
             self.hitbox.centery = self.rect.centery
 
-        # update facing/direction for simple sprite flip
+        # update facing/direction for simple sprite flip or directional images
         try:
             if dx < 0:
                 # facing left
                 self.facing = "left"
-                self.image = pygame.transform.flip(self.base_image, True, False)
+                if 'left' in self.direction_frames:
+                    self.image = self.direction_frames['left']
+                else:
+                    self.image = pygame.transform.flip(self.base_image, True, False)
             elif dx > 0:
                 self.facing = "right"
-                self.image = self.base_image
+                if 'right' in self.direction_frames:
+                    self.image = self.direction_frames['right']
+                else:
+                    self.image = self.base_image
+            else:
+                # vertical facing use up/down images if available
+                if dy < 0:
+                    if 'up' in self.direction_frames:
+                        self.image = self.direction_frames['up']
+                        self.facing = 'up'
+                elif dy > 0:
+                    if 'down' in self.direction_frames:
+                        self.image = self.direction_frames['down']
+                        self.facing = 'down'
         except Exception:
             pass
 
