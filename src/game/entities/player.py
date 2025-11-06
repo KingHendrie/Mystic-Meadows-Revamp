@@ -82,6 +82,10 @@ class Player(pygame.sprite.Sprite):
         # action state
         self.status = "idle"
         self.sleep = False
+        # hotbar: tools or seed ids (strings). 5 slots by default.
+        # Slots can be: 'hoe', 'water', 'harvest', or a seed id like 'corn'
+        self.hotbar = ["hoe", "water", "corn", "tomato", "harvest"]
+        self.selected_slot = 0
 
     def update(self, dt: float, keys=None) -> None:
         dx = dy = 0.0
@@ -167,6 +171,29 @@ class Player(pygame.sprite.Sprite):
         except Exception:
             pass
 
+        # sync rect and hitbox to the numeric position
+        try:
+            self.rect.center = (int(self.x), int(self.y))
+            self.hitbox.center = self.rect.center
+        except Exception:
+            pass
+
+        # input: hotbar selection (1..5) and action key (space/E)
+        try:
+            if keys is not None:
+                # number keys select slot
+                for i, k in enumerate((pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5)):
+                    if keys[k]:
+                        self.selected_slot = i
+                # action key
+                if keys[pygame.K_SPACE] or keys[pygame.K_RETURN]:
+                    self.perform_action()
+                # interact key (E)
+                if keys[pygame.K_e]:
+                    self.interact()
+        except Exception:
+            pass
+
     def use_tool_till(self, soil, tx: int, ty: int) -> bool:
         return soil.till(tx, ty)
 
@@ -209,6 +236,54 @@ class Player(pygame.sprite.Sprite):
                 return True
             return False
         return False
+
+    def perform_action(self) -> bool:
+        """Perform the action bound to the currently selected hotbar slot.
+
+        Resolves a target tile in front of the player using simple facing logic
+        and calls the appropriate SoilLayer method or interactives.
+        """
+        # compute target tile based on facing
+        try:
+            tile_size = getattr(self.soil, "tile_size", None)
+            if tile_size is None:
+                return False
+            tx = int(self.x) // tile_size
+            ty = int(self.y) // tile_size
+            f = getattr(self, "facing", "down")
+            if f == "left":
+                tx -= 1
+            elif f == "right":
+                tx += 1
+            elif f == "up":
+                ty -= 1
+            elif f == "down":
+                ty += 1
+
+            slot = None
+            try:
+                slot = self.hotbar[self.selected_slot]
+            except Exception:
+                return False
+
+            # tool semantics
+            if slot == "hoe":
+                return self.use_tool("hoe", tx, ty)
+            if slot == "water":
+                return self.use_tool("water", tx, ty)
+            if slot == "harvest":
+                return self.use_tool("harvest", tx, ty)
+
+            # otherwise treat slot as a seed id (plant)
+            # require at least one seed in inventory
+            if isinstance(slot, str) and self.inventory.get(slot, 0) > 0:
+                ok = self.soil.plant(tx, ty, slot)
+                if ok:
+                    self.inventory[slot] = self.inventory.get(slot, 0) - 1
+                return ok
+            return False
+        except Exception:
+            return False
 
     def interact(self):
         """Check interaction sprites (bed/trader). If bed -> toggle day via shop toggle for now."""

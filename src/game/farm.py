@@ -18,7 +18,9 @@ from src.game.entities.player import Player
 from src.game.sprites import Generic, Tree, Interaction
 from src.game.systems.save_system import SaveSystem
 from src.game.ui.menu import Menu
+from src.game.ui.hud import HUD
 from src.game.transition import Transition
+from src.game.sky import Sky
 
 _logger = logging.getLogger("mystic_meadows.farm")
 
@@ -69,6 +71,16 @@ class Farm:
 
         # Transition for day advance
         self.transition = Transition(window_size, on_day_advance=self._on_day_advance)
+
+        # Sky visuals and HUD
+        try:
+            self.sky = Sky(window_size)
+        except Exception:
+            self.sky = None
+        try:
+            self.ui = HUD(self.player, self.assets_dir)
+        except Exception:
+            self.ui = None
 
         # Save system
         try:
@@ -183,6 +195,11 @@ class Farm:
         # Attach world references to player so it can call soil/interact
         try:
             self.player.attach_world(self.soil, self.collision_sprites, self.tree_sprites, self.interaction_sprites, self.toggle_shop)
+            # convenient backref for HUD or other systems that want the farm/day
+            try:
+                setattr(self.player, "farm", self)
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -277,6 +294,13 @@ class Farm:
         except Exception:
             pass
 
+        # update sky
+        try:
+            if getattr(self, "sky", None) is not None:
+                self.sky.update(dt)
+        except Exception:
+            pass
+
     def render(self, surface: pygame.Surface):
         self.all_sprites.custom_draw(self.player, surface)
         # debug: draw player rect and a small marker so we can see where the camera centers
@@ -288,11 +312,17 @@ class Farm:
             pygame.draw.circle(surface, (0, 0, 255), (cx, cy), 3)
         except Exception:
             pass
-        # simple HUD
+        # sky overlay (draw over sprites but below UI)
         try:
-            font = pygame.font.Font(None, 24)
-            txt = font.render(f"Day: {self.day}  Money: {self.player.money}", True, (255,255,255))
-            surface.blit(txt, (8,8))
+            if getattr(self, "sky", None) is not None:
+                self.sky.display(surface)
+        except Exception:
+            pass
+
+        # HUD
+        try:
+            if getattr(self, "ui", None) is not None:
+                self.ui.display(surface)
         except Exception:
             pass
 
