@@ -15,7 +15,7 @@ from pygame.sprite import Group, Sprite
 from src.game.config import DEFAULT_TILE_SIZE, DEFAULT_WINDOW_SIZE
 from src.game.soil import SoilLayer
 from src.game.entities.player import Player
-from src.game.sprites import Generic
+from src.game.sprites import Generic, Tree, Interaction
 from src.game.systems.save_system import SaveSystem
 from src.game.ui.menu import Menu
 from src.game.transition import Transition
@@ -102,6 +102,65 @@ class Farm:
                             map_surf.blit(tile, (x * tmx.tilewidth, y * tmx.tileheight))
                 # add the combined map surface as a single sprite
                 Generic((0, 0), map_surf, (self.all_sprites,), z=0)
+
+                # parse object layers to place interactive objects and player
+                try:
+                    for obj in tmx.objects:
+                        name = getattr(obj, "name", "") or ""
+                        otype = getattr(obj, "type", "") or ""
+                        nx = int(obj.x)
+                        ny = int(obj.y)
+                        lname = name.lower()
+                        ltype = otype.lower()
+                        if lname in ("player", "start", "player_start") or ltype == "player":
+                            # Place player at object coordinate
+                            try:
+                                self.player.x = nx
+                                self.player.y = ny
+                                self.player.rect.center = (nx, ny)
+                                self.player.hitbox.center = self.player.rect.center
+                            except Exception:
+                                pass
+                        elif lname in ("bed",) or ltype == "bed":
+                            # create interaction sprite for bed
+                            try:
+                                w = int(getattr(obj, "width", 32))
+                                h = int(getattr(obj, "height", 32))
+                                Interaction((nx, ny), (w, h), "Bed", (self.all_sprites, self.interaction_sprites), z=5)
+                            except Exception:
+                                pass
+                        elif lname in ("trader", "shop") or ltype in ("trader", "shop"):
+                            try:
+                                w = int(getattr(obj, "width", 32))
+                                h = int(getattr(obj, "height", 32))
+                                Interaction((nx, ny), (w, h), "Trader", (self.all_sprites, self.interaction_sprites), z=5)
+                            except Exception:
+                                pass
+                        elif lname in ("tree",) or ltype == "tree":
+                            try:
+                                # create tree; align so its bottom is at obj.y
+                                tree = None
+                                tree = Tree((nx, ny - 48), None, (self.all_sprites, self.tree_sprites, self.collision_sprites), name="Tree", player_add=getattr(self.player, "player_add", None), z=3)
+                                # optionally spawn an apple immediately sometimes
+                                import random
+                                if random.random() < 0.2:
+                                    # try to load apple image
+                                    apple_path = self.assets_dir / "sprites" / "fruit" / "apple.png"
+                                    if apple_path.exists():
+                                        a_surf = pygame.image.load(str(apple_path)).convert_alpha()
+                                    else:
+                                        a_surf = pygame.Surface((8, 8), pygame.SRCALPHA)
+                                        pygame.draw.circle(a_surf, (200, 0, 0), (4, 4), 4)
+                                    a = tree.spawn_apple(a_surf)
+                                    try:
+                                        # add apple to all_sprites so it is visible
+                                        self.all_sprites.add(a)
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
             else:
                 # create simple ground tiles so the map is visible without TMX
                 ground_path = self.assets_dir / "sprites" / "world" / "ground.png"

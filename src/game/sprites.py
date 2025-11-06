@@ -100,5 +100,7 @@ class Tree(Sprite):
         a.image = apple_surf
         a.rect = a.image.get_rect(center=(self.rect.centerx, self.rect.centery - 10))
         a.z = self.z + 1
+        # item id for harvest
+        a.item_id = "apple"
         self.apple_sprites.add(a)
         return a
