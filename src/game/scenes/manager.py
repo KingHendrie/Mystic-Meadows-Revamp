@@ -15,6 +15,17 @@ class SceneManager:
             return
         scene = self._stack.pop()
         scene.on_exit()
+        # If there is now a scene revealed underneath, call its on_enter
+        # so it can reset transient UI state (e.g., TitleScene returning from GameScene).
+        if self._stack:
+            new_top = self._stack[-1]
+            try:
+                # Prefer to pass the scene's existing context if present
+                ctx = getattr(new_top, 'context', None)
+                new_top.on_enter(ctx)
+            except Exception:
+                # swallow errors to avoid breaking pop semantics
+                pass
 
     def current(self) -> Optional[object]:
         return self._stack[-1] if self._stack else None

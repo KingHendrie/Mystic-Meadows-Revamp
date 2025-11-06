@@ -46,11 +46,17 @@ data/saves/
 data/saves/*
 data/cache/
 data/cache/*
+# Debug exports and screenshots created by HUD debug tools
+data/screenshots/
+data/screenshots/*
+data/exports/
+data/exports/*
 
 # Temporary and backup files
 *.tmp
 *.bak
 *.swp
+backup/
 
 # Local environment / secrets
 .env

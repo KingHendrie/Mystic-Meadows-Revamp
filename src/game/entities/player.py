@@ -23,13 +23,17 @@ class Player(pygame.sprite.Sprite):
     def __init__(self, id: str = "player", x: float = 0.0, y: float = 0.0, assets_dir: str | None = None):
         super().__init__()
         self.id = id
-        self.x = x
-        self.y = y
-        # gameplay state
-        self.money = 0
+        # private x/y storage; external code sets player.x/player.y and
+        # the properties below keep rect/pos/hitbox synchronized
+        self._x = x
+        self._y = y
+        # keep assets_dir for loading animations/sounds
+        self.assets_dir = assets_dir
+        # gameplay state (defaults aligned with backup implementation)
+        self.money = 200
         self.energy = 100
         # support both names used across the codebase
-        self.inventory = {}
+        self.inventory = {'wood': 0, 'apple': 0, 'corn': 0, 'tomato': 0}
         self.item_inventory = self.inventory
         self.speed = 120.0
 
@@ -37,10 +41,8 @@ class Player(pygame.sprite.Sprite):
         surf = None
         try:
             if assets_dir is not None:
-                # attempt to find any character sprite under assets_dir/sprites/character
                 p = Path(assets_dir) / "sprites"
                 if p.exists():
-                    # find first png under sprites/character
                     char_dir = p / "character"
                     if char_dir.exists():
                         files = list(char_dir.rglob("*.png"))
@@ -54,6 +56,7 @@ class Player(pygame.sprite.Sprite):
             pygame.draw.rect(self.image, (255, 0, 255), self.image.get_rect())
         else:
             self.image = surf
+
         # keep an unmodified base image for flipping/animation
         try:
             self.base_image = self.image.copy()
@@ -66,7 +69,6 @@ class Player(pygame.sprite.Sprite):
             if assets_dir is not None:
                 char_dir = Path(assets_dir) / "sprites" / "character"
                 if char_dir.exists():
-                    # collect files
                     for f in char_dir.iterdir():
                         name = f.name.lower()
                         if name.endswith('.png'):
@@ -80,15 +82,27 @@ class Player(pygame.sprite.Sprite):
                                 self.direction_frames['down'] = pygame.image.load(str(f)).convert_alpha()
         except Exception:
             pass
-        self.rect = self.image.get_rect(center=(int(self.x), int(self.y)))
+
+        # rect and hitbox
+        self.rect = self.image.get_rect(center=(int(self._x), int(self._y)))
         self.hitbox = self.rect.copy()
-        self.hitbox.inflate_ip(-8, -8)
+        try:
+            # backup used a large negative inflate to shrink the hitbox; keep same values
+            self.hitbox.inflate_ip(-126, -70)
+        except Exception:
+            # fallback: small shrink if original inflate would be invalid for small sprites
+            self.hitbox.inflate_ip(-8, -8)
         self.z = 4
+        # use project layer mapping for player render order when available
+        try:
+            from data.config.settings import LAYERS
+            self.z = LAYERS.get('main', 7)
+        except Exception:
+            pass
 
         # load animations if available
         try:
             self.import_assets()
-            # set initial image from animations where possible
             if getattr(self, 'animations', None):
                 frames = self.animations.get(self.status, None)
                 if frames:
@@ -104,10 +118,15 @@ class Player(pygame.sprite.Sprite):
         self.toggle_shop: Optional[Callable[[bool], None]] = None
 
         # action state
-        # animation status keys like 'down', 'up', 'left', 'right', plus '_idle' or '_hoe' etc.
         self.status = 'down_idle'
         self.frame_index = 0.0
         self.sleep = False
+        # previous-key edge detections
+        self._return_prev = False
+        # track space key edge for interaction vs tool usage
+        self._space_prev = False
+        # facing used by some helper APIs (perform_action)
+        self.facing = 'down'
 
         # position & movement (compat with backup impl)
         self.pos = pygame.math.Vector2(self.rect.center)
@@ -117,9 +136,9 @@ class Player(pygame.sprite.Sprite):
         # Timers (use seconds)
         from src.game.timer import Timer
         self.timers = {
-            'tool use': Timer(0.35, callback=self._on_tool_use_done),
+            'tool use': Timer(0.35),
             'tool switch': Timer(0.2),
-            'seed use': Timer(0.35, callback=self._on_seed_use_done),
+            'seed use': Timer(0.35),
             'seed switch': Timer(0.2)
         }
 
@@ -128,21 +147,35 @@ class Player(pygame.sprite.Sprite):
         self.tool_index = 0
         self.selected_tool = self.tools[self.tool_index]
 
-        self.item_inventory = {}
-        self.seed_inventory = {'corn': 0, 'tomato': 0}
-        self.money = getattr(self, 'money', 0)
+        # inventory and seeds - start with small starter seeds like the backup
+        self.item_inventory = self.inventory
+        self.seed_inventory = {'corn': 5, 'tomato': 5}
 
         self.seeds = ['corn', 'tomato']
         self.seed_index = 0
         self.selected_seed = self.seeds[self.seed_index]
 
         # hotbar (visual mapping) keep existing simple hotbar too
-        self.hotbar = ["hoe", "water", "corn", "tomato", "harvest"]
-        self.selected_slot = 0
+        # include axe so players can use it from the hotbar
+        self.hotbar = ["hoe", "axe", "water", "corn", "tomato"]
+        # selected hotbar slot (use property below to keep tool/seed in sync)
+        self._selected_slot = 0
 
         # world refs
         self.tree_sprites = None
         self.interaction_sprites = None
+        # optional sounds (non-fatal if missing)
+        try:
+            if self.assets_dir is not None:
+                p = Path(self.assets_dir) / 'audio' / 'water.mp3'
+                if p.exists():
+                    # use module-level pygame imported at top
+                    self.watering = pygame.mixer.Sound(str(p))
+                    self.watering.set_volume(0.2)
+                else:
+                    self.watering = None
+        except Exception:
+            self.watering = None
 
     def update(self, dt: float, keys=None) -> None:
         # follow backup-style update pipeline: input -> status -> timers -> move -> animate
@@ -187,19 +220,133 @@ class Player(pygame.sprite.Sprite):
             except Exception:
                 pass
 
+    # x/y properties keep visual rect/pos in sync when external code sets them
+    @property
+    def x(self):
+        return self._x
+
+    @x.setter
+    def x(self, value: float):
+        try:
+            self._x = value
+            # update rect and hitbox centers and pos
+            if getattr(self, 'rect', None) is not None:
+                self.rect.centerx = int(value)
+            if getattr(self, 'hitbox', None) is not None:
+                self.hitbox.centerx = self.rect.centerx
+            if getattr(self, 'pos', None) is not None:
+                self.pos.x = self.hitbox.centerx
+        except Exception:
+            pass
+
+    @property
+    def y(self):
+        return self._y
+
+    @y.setter
+    def y(self, value: float):
+        try:
+            self._y = value
+            if getattr(self, 'rect', None) is not None:
+                self.rect.centery = int(value)
+            if getattr(self, 'hitbox', None) is not None:
+                self.hitbox.centery = self.rect.centery
+            if getattr(self, 'pos', None) is not None:
+                self.pos.y = self.hitbox.centery
+        except Exception:
+            pass
+
+    # selected_slot property keeps hotbar selection synchronized with tool/seed
+    @property
+    def selected_slot(self):
+        return getattr(self, '_selected_slot', 0)
+
+    @selected_slot.setter
+    def selected_slot(self, value):
+        try:
+            value = int(value)
+        except Exception:
+            value = 0
+        hotbar_len = len(getattr(self, 'hotbar', [])) or 1
+        self._selected_slot = value % hotbar_len
+        # sync selected tool/seed when slot changes
+        try:
+            slot = self.hotbar[self._selected_slot]
+            if slot in getattr(self, 'tools', []):
+                self.selected_tool = slot
+            elif slot in getattr(self, 'seeds', []):
+                self.selected_seed = slot
+        except Exception:
+            pass
+
     def use_tool_till(self, soil, tx: int, ty: int) -> bool:
         return soil.till(tx, ty)
 
+    def use_tool_axe(self, soil, tx: int, ty: int) -> bool:
+        """Use the axe at tile coords: damage any tree whose rect contains the tile center.
+        Returns True if any tree was damaged."""
+        try:
+            # convert tile coords to world center point
+            tile_size = getattr(soil, 'tile_size', TILE_SIZE)
+            px = tx * tile_size + tile_size // 2
+            py = ty * tile_size + tile_size // 2
+            if self.tree_sprites is None:
+                return False
+            any_hit = False
+            for tree in list(self.tree_sprites.sprites()):
+                try:
+                    if tree.rect.collidepoint((px, py)):
+                        try:
+                            tree.damage()
+                        except Exception:
+                            pass
+                        any_hit = True
+                except Exception:
+                    pass
+            return any_hit
+        except Exception:
+            return False
+
     def use_tool_plant(self, soil, tx: int, ty: int, seed_id: str) -> bool:
-        if self.inventory.get(seed_id, 0) <= 0:
+        # Use seed_inventory for seeds (consistent with seed use paths)
+        seed_count = getattr(self, 'seed_inventory', {}).get(seed_id, None)
+        if seed_count is None:
+            # fallback to generic inventory for legacy items
+            seed_count = self.inventory.get(seed_id, 0)
+            if seed_count <= 0:
+                return False
+            ok = soil.plant(tx, ty, seed_id)
+            if ok:
+                self.inventory[seed_id] = self.inventory.get(seed_id, 0) - 1
+            return ok
+
+        # seed_inventory path
+        if seed_count <= 0:
             return False
         ok = soil.plant(tx, ty, seed_id)
         if ok:
-            self.inventory[seed_id] = self.inventory.get(seed_id, 0) - 1
+            try:
+                self.seed_inventory[seed_id] = max(0, self.seed_inventory.get(seed_id, 0) - 1)
+            except Exception:
+                pass
         return ok
 
     def use_tool_water(self, soil, tx: int, ty: int) -> bool:
-        return soil.water(tx, ty)
+        # water a small area (3x3) centered on tx,ty to match typical watering can behaviour
+        try:
+            watered = False
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    nx = tx + dx
+                    ny = ty + dy
+                    try:
+                        if soil.water(nx, ny):
+                            watered = True
+                    except Exception:
+                        pass
+            return watered
+        except Exception:
+            return False
 
     def try_harvest(self, soil) -> Optional[str]:
         return soil.harvest_at_rect(self.hitbox)
@@ -221,11 +368,20 @@ class Player(pygame.sprite.Sprite):
             return self.use_tool_till(self.soil, tile_x, tile_y)
         if tool_name == "water":
             return self.use_tool_water(self.soil, tile_x, tile_y)
+        if tool_name == "axe":
+            return self.use_tool_axe(self.soil, tile_x, tile_y)
         if tool_name == "harvest":
             res = self.try_harvest(self.soil)
             if res:
                 # give to player inventory
                 self.inventory[res] = self.inventory.get(res, 0) + 1
+                # toast via HUD if available
+                try:
+                    ui = getattr(getattr(self, 'farm', None), 'ui', None)
+                    if ui is not None:
+                        ui.toast(f"Harvested {res}", 2.0)
+                except Exception:
+                    pass
                 return True
             return False
         return False
@@ -241,8 +397,9 @@ class Player(pygame.sprite.Sprite):
             tile_size = getattr(self.soil, "tile_size", None)
             if tile_size is None:
                 return False
-            tx = int(self.x) // tile_size
-            ty = int(self.y) // tile_size
+            # use current rect center so actions follow the player's visual position
+            tx = int(self.rect.centerx) // tile_size
+            ty = int(self.rect.centery) // tile_size
             f = getattr(self, "facing", "down")
             if f == "left":
                 tx -= 1
@@ -269,11 +426,27 @@ class Player(pygame.sprite.Sprite):
 
             # otherwise treat slot as a seed id (plant)
             # require at least one seed in inventory
-            if isinstance(slot, str) and self.inventory.get(slot, 0) > 0:
-                ok = self.soil.plant(tx, ty, slot)
-                if ok:
-                    self.inventory[slot] = self.inventory.get(slot, 0) - 1
-                return ok
+            if isinstance(slot, str):
+                # prefer seed_inventory for seed counts
+                seed_count = getattr(self, 'seed_inventory', {}).get(slot, None)
+                if seed_count is None:
+                    seed_count = self.inventory.get(slot, 0)
+                    if seed_count <= 0:
+                        return False
+                    ok = self.soil.plant(tx, ty, slot)
+                    if ok:
+                        self.inventory[slot] = self.inventory.get(slot, 0) - 1
+                    return ok
+                else:
+                    if seed_count <= 0:
+                        return False
+                    ok = self.soil.plant(tx, ty, slot)
+                    if ok:
+                        try:
+                            self.seed_inventory[slot] = max(0, self.seed_inventory.get(slot, 0) - 1)
+                        except Exception:
+                            pass
+                    return ok
             return False
         except Exception:
             return False
@@ -293,6 +466,11 @@ class Player(pygame.sprite.Sprite):
                             return "trader"
                     if name == "Bed":
                         # signal sleep -> higher-level should start transition
+                        # clear movement so the player doesn't slide during the sleep transition
+                        try:
+                            self.direction = pygame.math.Vector2()
+                        except Exception:
+                            pass
                         self.sleep = True
                         return "bed"
         except Exception:
@@ -303,38 +481,107 @@ class Player(pygame.sprite.Sprite):
         self.inventory[item_id] = self.inventory.get(item_id, 0) + amount
 
     # --- Backup-style methods: timers, assets, input, animation, movement ---
-    def _on_tool_use_done(self):
-        # called when tool use timer finishes
+    def _on_tool_use_done(self, slot: str | None = None, target_pos=None):
+        # called when tool use timer finishes. Use the captured slot and target_pos
         try:
-            # perform actual tool effect now
-            if self.selected_tool == 'hoe':
-                # target_pos computed previously
-                tx = int(self.target_pos[0]) // getattr(self.soil, 'tile_size', TILE_SIZE)
-                ty = int(self.target_pos[1]) // getattr(self.soil, 'tile_size', TILE_SIZE)
-                self.soil.till(tx, ty)
-            elif self.selected_tool == 'water':
-                tx = int(self.target_pos[0]) // getattr(self.soil, 'tile_size', TILE_SIZE)
-                ty = int(self.target_pos[1]) // getattr(self.soil, 'tile_size', TILE_SIZE)
-                self.soil.water(tx, ty)
-            elif self.selected_tool == 'axe':
-                # damage trees at target
+            tool = slot or getattr(self, 'selected_tool', None)
+            tp = target_pos or getattr(self, 'target_pos', None)
+            if tp is None:
+                return
+            tx = int(tp[0]) // getattr(self.soil, 'tile_size', TILE_SIZE)
+            ty = int(tp[1]) // getattr(self.soil, 'tile_size', TILE_SIZE)
+
+            # Debug: report tool use and computed tile coords
+            try:
+                print(f"_on_tool_use_done: tool={tool}, target_pos={tp}, tile=({tx},{ty})")
+            except Exception:
+                pass
+
+            if tool == 'hoe':
+                # try to use SoilLayer.get_hit if present (backup compatibility), else till
+                try:
+                    if hasattr(self.soil, 'get_hit'):
+                        res = self.soil.get_hit(tp)
+                        try:
+                            print(f"soil.get_hit returned: {res}")
+                        except Exception:
+                            pass
+                        if not res:
+                            # fallback to till by tile coords
+                            res2 = self.soil.till(tx, ty)
+                            try:
+                                print(f"soil.till fallback returned: {res2} for tile {tx},{ty}")
+                            except Exception:
+                                pass
+                    else:
+                        res2 = self.soil.till(tx, ty)
+                        try:
+                            print(f"soil.till returned: {res2} for tile {tx},{ty}")
+                        except Exception:
+                            pass
+                except Exception:
+                    try:
+                        self.soil.till(tx, ty)
+                    except Exception:
+                        pass
+            elif tool == 'water':
+                try:
+                    self.soil.water(tx, ty)
+                    try:
+                        if getattr(self, 'watering', None) is not None:
+                            self.watering.play()
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            elif tool == 'axe':
+                # damage trees at target_pos
                 if self.tree_sprites is not None:
                     for tree in self.tree_sprites.sprites():
-                        if tree.rect.collidepoint(self.target_pos):
+                        if tree.rect.collidepoint(tp):
                             try:
                                 tree.damage()
                             except Exception:
                                 pass
+            # clear any placement preview now that the action completed
+            try:
+                if getattr(self, 'soil', None) is not None:
+                    try:
+                        self.soil.clear_preview()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         except Exception:
             pass
 
-    def _on_seed_use_done(self):
+    def _on_seed_use_done(self, seed: str | None = None, target_pos=None):
         try:
-            tx = int(self.target_pos[0]) // getattr(self.soil, 'tile_size', TILE_SIZE)
-            ty = int(self.target_pos[1]) // getattr(self.soil, 'tile_size', TILE_SIZE)
-            if self.seed_inventory.get(self.selected_seed, 0) > 0:
-                self.soil.plant(tx, ty, self.selected_seed)
-                self.seed_inventory[self.selected_seed] -= 1
+            s = seed or getattr(self, 'selected_seed', None)
+            tp = target_pos or getattr(self, 'target_pos', None)
+            if tp is None or s is None:
+                return
+            tx = int(tp[0]) // getattr(self.soil, 'tile_size', TILE_SIZE)
+            ty = int(tp[1]) // getattr(self.soil, 'tile_size', TILE_SIZE)
+            if self.seed_inventory.get(s, 0) > 0:
+                try:
+                    ok = self.soil.plant(tx, ty, s)
+                    if ok:
+                        try:
+                            self.seed_inventory[s] = max(0, self.seed_inventory.get(s, 0) - 1)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            # clear preview after planting
+            try:
+                if getattr(self, 'soil', None) is not None:
+                    try:
+                        self.soil.clear_preview()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -373,8 +620,18 @@ class Player(pygame.sprite.Sprite):
 
     def input(self):
         keys = self._keys if hasattr(self, '_keys') else pygame.key.get_pressed()
-        # Only accept input when not using tools and not sleeping
-        if not self.timers['tool use'].running and not self.sleep:
+        try:
+            space_pressed = bool(keys[pygame.K_SPACE])
+        except Exception:
+            space_pressed = False
+        # Only accept input when not using tools and not sleeping/transitioning
+        # If the farm transition is running (day/night sleep animation), treat the player
+        # as not accepting input so they cannot move until transition completes.
+        try:
+            transition_running = bool(getattr(self, 'farm', None) and getattr(self.farm, 'transition', None) and getattr(self.farm.transition, 'running', False))
+        except Exception:
+            transition_running = False
+        if not self.timers['tool use'].running and not self.sleep and not transition_running:
             # movement
             if keys[pygame.K_w] or keys[pygame.K_UP]:
                 self.direction.y = -1
@@ -394,59 +651,187 @@ class Player(pygame.sprite.Sprite):
             else:
                 self.direction.x = 0
 
-            # Tool use (SPACE)
-            if keys[pygame.K_SPACE] and not self.timers['tool use'].running:
-                self.timers['tool use'].start()
-                self.direction = pygame.math.Vector2()
-                self.frame_index = 0
-
-            # Change tool (Q)
-            if keys[pygame.K_q] and not self.timers['tool switch'].running:
-                self.timers['tool switch'].start()
-                self.tool_index = (self.tool_index + 1) % len(self.tools)
-                self.selected_tool = self.tools[self.tool_index]
-
-            # Seed use (LCTRL)
-            if keys[pygame.K_LCTRL] and not self.timers['seed use'].running:
-                self.timers['seed use'].start()
-                self.direction = pygame.math.Vector2()
-                self.frame_index = 0
-
-            # Change seed (E)
-            if keys[pygame.K_e] and not self.timers['seed switch'].running:
-                self.timers['seed switch'].start()
-                self.seed_index = (self.seed_index + 1) % len(self.seeds)
-                self.selected_seed = self.seeds[self.seed_index]
-
-            # Interact / sleep (RETURN)
-            if keys[pygame.K_RETURN]:
-                collided = []
+            # Action key (SPACE): start tool or seed use depending on selected hotbar slot
+            # If the player pressed SPACE this frame and is standing on an interaction
+            # trigger (Bed/Trader), prefer the interaction instead of using the tool.
+            if space_pressed and not getattr(self, '_space_prev', False):
                 try:
                     if self.interaction_sprites is not None:
                         for it in self.interaction_sprites.sprites():
                             if it.rect.colliderect(self.hitbox):
-                                collided.append(it)
+                                res = self.interact()
+                                if res == 'trader':
+                                    try:
+                                        if self.toggle_shop:
+                                            self.toggle_shop(True)
+                                    except Exception:
+                                        pass
+                                    # consume this space press (edge) and skip tool handling
+                                    self._space_prev = True
+                                    return
+                                if res == 'bed':
+                                    try:
+                                        self.status = 'left_idle'
+                                    except Exception:
+                                        pass
+                                    self._space_prev = True
+                                    return
                 except Exception:
-                    collided = []
-                if collided:
-                    name = getattr(collided[0], 'name', None)
-                    if name == 'Trader' and self.toggle_shop:
-                        self.toggle_shop(True)
-                    else:
-                        self.status = 'left_idle'
-                        self.sleep = True
+                    pass
+            if keys[pygame.K_SPACE]:
+                try:
+                    slot = self.hotbar[self.selected_slot]
+                except Exception:
+                    slot = None
+                # if slot corresponds to a seed, start seed use timer
+                if slot in getattr(self, 'seeds', []):
+                    # don't start if player has no seeds for this slot
+                    seed_count = getattr(self, 'seed_inventory', {}).get(slot, None)
+                    if seed_count is None:
+                        seed_count = self.inventory.get(slot, 0)
+                    if seed_count <= 0:
+                        # nothing to plant
+                        return
+                    if not self.timers['seed use'].running:
+                        # compute & capture current target_pos so callback uses the correct values
+                        try:
+                            self.get_target_pos()
+                        except Exception:
+                            pass
+                        tp = tuple(getattr(self, 'target_pos', (self.rect.centerx, self.rect.centery)))
+                        # show a placement preview immediately (tile coords)
+                        try:
+                            if getattr(self, 'soil', None) is not None:
+                                tile_size = getattr(self.soil, 'tile_size', TILE_SIZE)
+                                tx = int(tp[0]) // tile_size
+                                ty = int(tp[1]) // tile_size
+                                try:
+                                    self.soil.clear_preview()
+                                except Exception:
+                                    pass
+                                try:
+                                    self.soil.preview_tile(tx, ty)
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                        self.timers['seed use'].callback = (lambda s=slot, tpos=tp: self._on_seed_use_done(s, tpos))
+                        self.timers['seed use'].start()
+                        self.direction = pygame.math.Vector2()
+                        self.frame_index = 0
+                else:
+                    # treat as tool/harvest
+                    if not self.timers['tool use'].running:
+                        try:
+                            self.get_target_pos()
+                        except Exception:
+                            pass
+                        tp = tuple(getattr(self, 'target_pos', (self.rect.centerx, self.rect.centery)))
+                        # show a placement preview immediately (tile coords)
+                        try:
+                            if getattr(self, 'soil', None) is not None:
+                                tile_size = getattr(self.soil, 'tile_size', TILE_SIZE)
+                                tx = int(tp[0]) // tile_size
+                                ty = int(tp[1]) // tile_size
+                                try:
+                                    self.soil.clear_preview()
+                                except Exception:
+                                    pass
+                                try:
+                                    self.soil.preview_tile(tx, ty)
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                        # capture slot and target position at start
+                        self.timers['tool use'].callback = (lambda s=slot, tpos=tp: self._on_tool_use_done(s, tpos))
+                        self.timers['tool use'].start()
+                        self.direction = pygame.math.Vector2()
+                        self.frame_index = 0
+
+            # Seed use (LCTRL)
+            if keys[pygame.K_LCTRL] and not self.timers['seed use'].running:
+                try:
+                    self.get_target_pos()
+                except Exception:
+                    pass
+                tp = tuple(getattr(self, 'target_pos', (self.rect.centerx, self.rect.centery)))
+                # use currently selected_seed at the time LCTRL was pressed
+                seed = getattr(self, 'selected_seed', None)
+                # ensure we have at least one seed
+                seed_count = getattr(self, 'seed_inventory', {}).get(seed, None)
+                if seed_count is None:
+                    seed_count = self.inventory.get(seed, 0)
+                if seed is None or seed_count <= 0:
+                    # nothing to plant
+                    return
+                # show placement preview for LCTRL planting
+                try:
+                    if getattr(self, 'soil', None) is not None:
+                        tile_size = getattr(self.soil, 'tile_size', TILE_SIZE)
+                        tx = int(tp[0]) // tile_size
+                        ty = int(tp[1]) // tile_size
+                        try:
+                            self.soil.clear_preview()
+                        except Exception:
+                            pass
+                        try:
+                            self.soil.preview_tile(tx, ty)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                self.timers['seed use'].callback = (lambda s=seed, tpos=tp: self._on_seed_use_done(s, tpos))
+                self.timers['seed use'].start()
+                self.direction = pygame.math.Vector2()
+                self.frame_index = 0
+            # NOTE: removed Q/E cycling. Hotbar selection is the single source of truth.
+
+            # Interact / sleep (RETURN)
+            # Interact / sleep (RETURN) - edge detect so a single press triggers
+            try:
+                return_pressed = bool(keys[pygame.K_RETURN])
+            except Exception:
+                return_pressed = False
+            if return_pressed and not getattr(self, '_return_prev', False):
+                # on keydown, attempt interaction via invisible Interaction sprites
+                try:
+                    res = self.interact()
+                    try:
+                        print(f"Player.interact() -> {res}")
+                    except Exception:
+                        pass
+                    if res == 'trader':
+                        # Farm.toggle_shop will handle proximity in farm; call toggle directly
+                        try:
+                            if self.toggle_shop:
+                                self.toggle_shop(True)
+                        except Exception:
+                            pass
+                    elif res == 'bed':
+                        # set sleep; Farm will start transition when it sees player.sleep
+                        try:
+                            self.status = 'left_idle'
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            # update prev key state
+            try:
+                self._return_prev = return_pressed
+            except Exception:
+                pass
+            try:
+                self._space_prev = space_pressed
+            except Exception:
+                pass
 
         # hotbar selection (1-5) and perform action (space alternative)
         try:
             for i, k in enumerate((pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5)):
                 if keys[k]:
+                    # set selected slot (property will keep tool/seed synced)
                     self.selected_slot = i
-                    # also update selected tool/seed for convenience
-                    slot = self.hotbar[i]
-                    if slot in self.tools:
-                        self.selected_tool = slot
-                    elif slot in self.seeds:
-                        self.selected_seed = slot
             # action via space/return already handled
         except Exception:
             pass
@@ -461,6 +846,8 @@ class Player(pygame.sprite.Sprite):
                 self.status = self.status.split('_')[0] + '_' + self.selected_tool
             if self.timers['seed use'].running:
                 self.status = self.status.split('_')[0] + '_hoe'
+            # keep facing in sync with status base (up/down/left/right)
+            self.facing = self.status.split('_')[0]
         except Exception:
             pass
 
@@ -476,19 +863,24 @@ class Player(pygame.sprite.Sprite):
     def collision(self, direction):
         try:
             for sprite in self.collision_sprites.sprites():
-                if getattr(sprite, 'hitbox', None) is not None and sprite.hitbox.colliderect(self.hitbox):
+                # prefer a sprite.hitbox when available, otherwise use sprite.rect
+                other_box = getattr(sprite, 'hitbox', None) or getattr(sprite, 'rect', None)
+                if other_box is None:
+                    continue
+                if other_box.colliderect(self.hitbox):
                     if direction == 'horizontal':
                         if self.direction.x > 0:
-                            self.hitbox.right = sprite.hitbox.left
+                            # moving right -> place player's right to other's left
+                            self.hitbox.right = other_box.left
                         if self.direction.x < 0:
-                            self.hitbox.left = sprite.hitbox.right
+                            self.hitbox.left = other_box.right
                         self.rect.centerx = self.hitbox.centerx
                         self.pos.x = self.hitbox.centerx
                     if direction == 'vertical':
                         if self.direction.y > 0:
-                            self.hitbox.bottom = sprite.hitbox.top
+                            self.hitbox.bottom = other_box.top
                         if self.direction.y < 0:
-                            self.hitbox.top = sprite.hitbox.bottom
+                            self.hitbox.top = other_box.bottom
                         self.rect.centery = self.hitbox.centery
                         self.pos.y = self.hitbox.centery
         except Exception:
@@ -496,6 +888,18 @@ class Player(pygame.sprite.Sprite):
 
     def move(self, dt: float):
         try:
+            # Do not move while sleeping or while the day-transition is running
+            try:
+                if getattr(self, 'sleep', False):
+                    return
+            except Exception:
+                pass
+            try:
+                if getattr(self, 'farm', None) and getattr(self.farm, 'transition', None) and getattr(self.farm.transition, 'running', False):
+                    return
+            except Exception:
+                pass
+
             if self.direction.length() > 1:
                 self.direction = self.direction.normalize()
 

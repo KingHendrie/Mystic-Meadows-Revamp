@@ -47,8 +47,15 @@ class CameraGroup(Group):
 
 class Farm:
     def __init__(self, assets_dir: Path, data_dir: Path, window_size=DEFAULT_WINDOW_SIZE, tile_size=DEFAULT_TILE_SIZE[0]):
-        self.assets_dir = Path(assets_dir)
-        self.data_dir = Path(data_dir)
+        # Accept None for assets_dir/data_dir and fall back to repository root ('.')
+        try:
+            self.assets_dir = Path(assets_dir) if assets_dir is not None else Path('.')
+        except Exception:
+            self.assets_dir = Path('.')
+        try:
+            self.data_dir = Path(data_dir) if data_dir is not None else Path('.')
+        except Exception:
+            self.data_dir = Path('.')
         self.tile_size = tile_size
         self.window_size = window_size
 
@@ -68,6 +75,11 @@ class Farm:
         self.menu = Menu(self.player, self.toggle_shop)
         self._tab_prev = False
         self._n_prev = False
+        # debug key edge state (F6 teleport to plant, F7 toggle debug overlay)
+        self._f6_prev = False
+        self._f7_prev = False
+        # debug draw flags
+        self._debug_draw_collisions = False
 
         # Transition for day advance
         self.transition = Transition(window_size, on_day_advance=self._on_day_advance)
@@ -82,16 +94,35 @@ class Farm:
         except Exception:
             self.ui = None
 
+        
         # Save system
         try:
             self.save_system = SaveSystem(self.data_dir)
         except Exception:
             self.save_system = None
 
-        # Soil grid: compute grid size based on window size
+        # Soil grid: prefer using the authored TMX map tile size and dimensions
+        # if available so soil tiles align with the map. Fall back to window-based grid.
         grid_w = window_size[0] // tile_size
         grid_h = window_size[1] // tile_size
-        self.soil = SoilLayer(self.all_sprites, self.collision_sprites, tile_size, (grid_w, grid_h))
+        effective_tile_size = tile_size
+        try:
+            try:
+                from pytmx.util_pygame import load_pygame
+            except Exception:
+                load_pygame = None
+            map_file = self.data_dir / "map.tmx"
+            if load_pygame is not None and map_file.exists():
+                tmx = load_pygame(str(map_file))
+                # prefer the TMX tile size so coordinates match the map
+                effective_tile_size = getattr(tmx, 'tilewidth', tile_size)
+                grid_w = getattr(tmx, 'width', grid_w)
+                grid_h = getattr(tmx, 'height', grid_h)
+        except Exception:
+            pass
+
+        # create SoilLayer with the effective tile size and grid dimensions
+        self.soil = SoilLayer(self.all_sprites, self.collision_sprites, effective_tile_size, (grid_w, grid_h), assets_dir=self.assets_dir)
 
         # Try to load authored TMX map with layer-aware sprite creation (preferred)
         try:
@@ -205,6 +236,17 @@ class Farm:
                                     self.player.y = ny
                                     self.player.rect.center = (nx, ny)
                                     self.player.hitbox.center = self.player.rect.center
+                                    # Debug: verify soil grid marks this spawn tile as farmable
+                                    try:
+                                        tx = nx // self.soil.tile_size
+                                        ty = ny // self.soil.tile_size
+                                        f = getattr(self.soil, 'grid', None)
+                                        has_f = False
+                                        if self.soil.in_bounds(tx, ty):
+                                            has_f = ('F' in self.soil.grid[ty][tx])
+                                        print(f"Player spawn at px={nx},{ny} -> tile={tx},{ty}, farmable={has_f}")
+                                    except Exception:
+                                        pass
                                 except Exception:
                                     pass
                             elif name == 'Bed':
@@ -257,6 +299,8 @@ class Farm:
         # HUD state
         self.day = 1
         self.running = True
+        # selected save slot (default 1); can be overridden by TitleScene via context
+        self.save_slot = 1
 
         # audio
         try:
@@ -313,8 +357,78 @@ class Farm:
         except Exception:
             pass
 
+        # debug keys: teleport to first plant (F6) and toggle plant overlay (F7)
+        try:
+            try:
+                f6_pressed = keys[pygame.K_F6]
+            except Exception:
+                f6_pressed = False
+            try:
+                f7_pressed = keys[pygame.K_F7]
+            except Exception:
+                f7_pressed = False
+
+            # teleport to first plant on press (edge-detected)
+            if f6_pressed and not getattr(self, '_f6_prev', False):
+                try:
+                    ps = list(self.soil.plant_sprites.sprites())
+                    if ps:
+                        p = ps[0]
+                        # set player's logical position via properties so pos/hitbox sync
+                        try:
+                            # prefer property setters which update rect/hitbox/pos
+                            self.player.x = p.rect.centerx
+                            self.player.y = p.rect.centery
+                        except Exception:
+                            # fallback: directly set rect and hitbox and pos vector
+                            try:
+                                self.player.rect.center = p.rect.center
+                            except Exception:
+                                pass
+                            try:
+                                self.player.hitbox.center = p.rect.center
+                            except Exception:
+                                pass
+                            try:
+                                if getattr(self.player, 'pos', None) is not None:
+                                    self.player.pos.x = p.rect.centerx
+                                    self.player.pos.y = p.rect.centery
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+
+            # toggle HUD debug overlay on F7 press (edge-detected)
+            if f7_pressed and not getattr(self, '_f7_prev', False):
+                try:
+                    if getattr(self, 'ui', None) is not None:
+                        self.ui.show_debug = not getattr(self.ui, 'show_debug', False)
+                except Exception:
+                    pass
+
+            self._f6_prev = f6_pressed
+            self._f7_prev = f7_pressed
+        except Exception:
+            pass
+
         if tab_pressed and not self._tab_prev:
-            self.toggle_shop(True)
+            # only open the shop if the player is near a Trader interaction object
+            opened = False
+            try:
+                if self.player.interaction_sprites is not None:
+                    for it in self.player.interaction_sprites.sprites():
+                        try:
+                            if getattr(it, 'name', None) == 'Trader' and it.rect.colliderect(self.player.hitbox):
+                                self.toggle_shop(True)
+                                opened = True
+                                break
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            if not opened:
+                # ignore tab when not near trader
+                pass
         if n_pressed and not self._n_prev:
             # start transition (which will call day advance when complete)
             try:
@@ -357,6 +471,27 @@ class Farm:
         except Exception:
             pass
 
+        # If player indicated sleep via interaction, start the day transition
+        try:
+            if getattr(self.player, 'sleep', False):
+                if not getattr(self.transition, 'running', False):
+                    try:
+                        self.transition.start()
+                    except Exception:
+                        pass
+                # reset the flag so we don't repeatedly start transitions
+                try:
+                    # clear any current movement so the player doesn't resume moving
+                    try:
+                        self.player.direction = pygame.math.Vector2()
+                    except Exception:
+                        pass
+                    self.player.sleep = False
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         # update sky
         try:
             if getattr(self, "sky", None) is not None:
@@ -366,13 +501,25 @@ class Farm:
 
     def render(self, surface: pygame.Surface):
         self.all_sprites.custom_draw(self.player, surface)
-        # debug: draw player rect and a small marker so we can see where the camera centers
+        # debug: optionally draw player rect and a small marker (controlled by HUD debug toggle)
         try:
-            pygame.draw.rect(surface, (255, 0, 0), self.player.rect.move((self.window_size[0]//2 - self.player.rect.centerx, self.window_size[1]//2 - self.player.rect.centery)), 1)
-            # small center marker
-            cx = self.window_size[0] // 2
-            cy = self.window_size[1] // 2
-            pygame.draw.circle(surface, (0, 0, 255), (cx, cy), 3)
+            if getattr(self, 'ui', None) is not None and getattr(self.ui, 'show_debug', False):
+                pygame.draw.rect(surface, (255, 0, 0), self.player.rect.move((self.window_size[0]//2 - self.player.rect.centerx, self.window_size[1]//2 - self.player.rect.centery)), 1)
+                # small center marker
+                cx = self.window_size[0] // 2
+                cy = self.window_size[1] // 2
+                pygame.draw.circle(surface, (0, 0, 255), (cx, cy), 3)
+                # optionally draw collision rects
+                try:
+                    if getattr(self, '_debug_draw_collisions', False):
+                        for c in list(self.collision_sprites.sprites()):
+                            try:
+                                dest = c.rect.move((self.window_size[0]//2 - self.player.rect.centerx, self.window_size[1]//2 - self.player.rect.centery))
+                                pygame.draw.rect(surface, (255, 128, 0), dest, 1)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
         except Exception:
             pass
         # sky overlay (draw over sprites but below UI)
@@ -392,12 +539,27 @@ class Farm:
         # draw menu overlay if active
         try:
             if self.menu.active:
-                font = pygame.font.Font(None, 32)
-                overlay = pygame.Surface((200, 150), pygame.SRCALPHA)
-                overlay.fill((0,0,0,180))
-                surface.blit(overlay, (50, 50))
-                surface.blit(font.render("Shop - 1: Corn (5)", True, (255,255,255)), (60, 60))
-                surface.blit(font.render("2: Tomato (7)", True, (255,255,255)), (60, 100))
+                # let menu render itself (includes controls panel when toggled)
+                try:
+                    self.menu.draw(surface)
+                except Exception:
+                    # fallback to old minimal overlay
+                    font = pygame.font.Font(None, 32)
+                    overlay = pygame.Surface((200, 150), pygame.SRCALPHA)
+                    overlay.fill((0,0,0,180))
+                    surface.blit(overlay, (50, 50))
+                    surface.blit(font.render("Shop - 1: Corn (5)", True, (255,255,255)), (60, 60))
+                    surface.blit(font.render("2: Tomato (7)", True, (255,255,255)), (60, 100))
+            else:
+                # if the menu isn't active but the controls overlay was requested (Tab held), draw it
+                try:
+                    if getattr(self, 'menu', None) is not None and getattr(self.menu, 'show_controls', False):
+                        try:
+                            self.menu.draw_controls(surface)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -448,12 +610,14 @@ class Farm:
     def reset_day(self):
         # Called at end of day
         self.soil.update_plants()
+        # Clear any watering marks at day reset so watering lasts only a single day
+        # (water should not persist across sleeps/day advances).
         self.soil.remove_water()
+        # decide whether the new day will have rain, but do not automatically
+        # re-water tiles here: watering should be an in-day event or handled
+        # explicitly rather than immediately after sleeping.
         import random
-
         self.soil.raining = random.choice([False, False, True])
-        if self.soil.raining:
-            self.soil.water_all()
         self.day += 1
 
     def _on_day_advance(self):
@@ -466,23 +630,46 @@ class Farm:
         # perform quick-save of essential state
         if getattr(self, "save_system", None) is not None:
             try:
-                state = {
-                    "day": self.day,
-                    "player": {
-                        "money": getattr(self.player, "money", 0),
-                        "inventory": getattr(self.player, "inventory", getattr(self.player, "item_inventory", {})),
-                    },
-                    "plants": [
-                        {"x": p.rect.x // self.tile_size, "y": p.rect.y // self.tile_size, "type": getattr(p, "plant_type", None), "growth_stage": getattr(p, "growth_stage", 0)}
-                        for p in list(self.soil.plant_sprites.sprites())
-                    ],
-                }
+                # reuse save_game which assembles a consistent state and respects the
+                # currently selected save slot (self.save_slot). This ensures we do
+                # not accidentally create a new slot based on the day number.
                 try:
-                    self.save_system.auto_save(state, slot=self.day)
-                except Exception:
-                    # fallback to default slot 1
+                    self.save_game(slot=getattr(self, 'save_slot', None))
+                    # display a save toast when UI is available
                     try:
-                        self.save_system.auto_save(state)
+                        ui = getattr(self, 'ui', None)
+                        if ui is not None:
+                            ui.toast(f"Game saved (slot {getattr(self, 'save_slot', 1)})", 2.5)
+                    except Exception:
+                        pass
+                except Exception:
+                    # fallback: try auto_save using the configured save_slot
+                    try:
+                        use_slot = getattr(self, 'save_slot', 1)
+                        state = {
+                            "day": self.day,
+                            "player": {
+                                "money": getattr(self.player, "money", 0),
+                                "inventory": getattr(self.player, "inventory", getattr(self.player, "item_inventory", {})),
+                            },
+                            "plants": [
+                                {"x": getattr(p, 'tx', int(p.rect.x) // self.tile_size), "y": getattr(p, 'ty', int(p.rect.y) // self.tile_size), "type": getattr(p, "plant_type", None), "growth_stage": getattr(p, "growth_stage", 0)}
+                                for p in list(self.soil.plant_sprites.sprites())
+                            ],
+                        }
+                        try:
+                            self.save_system.auto_save(state, slot=use_slot)
+                        except Exception:
+                            try:
+                                self.save_system.auto_save(state)
+                            except Exception:
+                                pass
+                        try:
+                            ui = getattr(self, 'ui', None)
+                            if ui is not None:
+                                ui.toast(f"Game saved (slot {use_slot})", 2.5)
+                        except Exception:
+                            pass
                     except Exception:
                         pass
             except Exception:
@@ -496,3 +683,169 @@ class Farm:
                 self.menu.close()
         except Exception:
             pass
+
+    def save_game(self, slot: int | None = None):
+        """Assemble runtime state and delegate to SaveSystem to persist it.
+
+        The saved state includes:
+        - day number
+        - player money and inventory (including seed_inventory)
+        - soil grid flags (per-tile list of flags)
+        - plant list with x,y,type and growth_stage
+        """
+        try:
+            if getattr(self, 'save_system', None) is None:
+                return None
+            use_slot = slot or getattr(self, 'save_slot', 1)
+            state = {
+                'day': getattr(self, 'day', 1),
+                'player': {
+                    'money': getattr(self.player, 'money', 0),
+                    'inventory': getattr(self.player, 'inventory', getattr(self.player, 'item_inventory', {})),
+                    'seed_inventory': getattr(self.player, 'seed_inventory', {}),
+                    # save player logical position (prefer pos vector) so load can restore camera/player
+                    'pos': (
+                        int(getattr(getattr(self.player, 'pos', None), 'x', getattr(self.player, 'rect', None) and int(self.player.rect.centerx) or 0)),
+                        int(getattr(getattr(self.player, 'pos', None), 'y', getattr(self.player, 'rect', None) and int(self.player.rect.centery) or 0)),
+                    ),
+                    # save orientation/status so we can restore facing/animation state
+                    'status': getattr(self.player, 'status', None),
+                    'facing': getattr(self.player, 'facing', None),
+                },
+                'soil': {
+                    'grid': getattr(self.soil, 'grid', []),
+                    'tile_size': getattr(self.soil, 'tile_size', None),
+                    'width': getattr(self.soil, 'grid_w', None),
+                    'height': getattr(self.soil, 'grid_h', None),
+                },
+                    'plants': [
+                        {
+                            'x': getattr(p, 'tx', int(p.rect.x) // self.tile_size),
+                            'y': getattr(p, 'ty', int(p.rect.y) // self.tile_size),
+                            'type': getattr(p, 'plant_type', None),
+                            'growth_stage': getattr(p, 'growth_stage', 0),
+                        }
+                        for p in list(getattr(self.soil, 'plant_sprites', []).sprites())
+                    ],
+            }
+            # use auto_save which wraps save with default directory handling
+            try:
+                return self.save_system.auto_save(state, slot=use_slot)
+            except Exception:
+                return None
+        except Exception:
+            return None
+
+    def load_from_payload(self, payload: dict):
+        """Restore farm state from saved payload (payload is the save file 'payload' dict)."""
+        # Minimal, robust restore implementation with a clear control flow.
+        try:
+            # day
+            try:
+                self.day = int(payload.get('day', self.day))
+            except Exception:
+                _logger.debug('load_from_payload: failed to parse day from payload')
+
+            # player basic state
+            player_state = payload.get('player', {}) or {}
+            try:
+                self.player.money = player_state.get('money', getattr(self.player, 'money', 0))
+            except Exception:
+                pass
+            if 'inventory' in player_state:
+                try:
+                    self.player.inventory = player_state.get('inventory', self.player.inventory)
+                except Exception:
+                    pass
+            if 'seed_inventory' in player_state:
+                try:
+                    self.player.seed_inventory = player_state.get('seed_inventory', getattr(self.player, 'seed_inventory', {}))
+                except Exception:
+                    pass
+
+            # soil and plants
+            soil_payload = payload.get('soil', {})
+            plants_payload = payload.get('plants', [])
+            if getattr(self, 'soil', None) is not None:
+                try:
+                    self.soil.restore_state(soil_payload, plants_payload)
+                except Exception:
+                    _logger.exception('load_from_payload: soil.restore_state failed')
+
+            # Player position handling: prefer saved pos, but if it places the player far
+            # away from any restored plant, move them to the first plant so crops are visible.
+            pos = player_state.get('pos', None)
+            try:
+                if pos:
+                    # prefer setting player.x/player.y to keep internal pos/hitbox/rect in sync
+                    try:
+                        self.player.x = int(pos[0])
+                        self.player.y = int(pos[1])
+                    except Exception:
+                        try:
+                            self.player.rect.center = (int(pos[0]), int(pos[1]))
+                        except Exception:
+                            pass
+                    try:
+                        if getattr(self.player, 'hitbox', None) is not None:
+                            self.player.hitbox.center = self.player.rect.center
+                    except Exception:
+                        pass
+                    # restore orientation/status if present
+                    try:
+                        st = player_state.get('status', None)
+                        if st is not None:
+                            try:
+                                self.player.status = st
+                                # if animations exist, update image to match status
+                                if getattr(self.player, 'animations', None) and st in getattr(self.player, 'animations', {}):
+                                    frames = self.player.animations.get(st) or []
+                                    if frames:
+                                        self.player.image = frames[0]
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    try:
+                        facing = player_state.get('facing', None)
+                        if facing is not None:
+                            try:
+                                self.player.facing = facing
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                # collect restored plants
+                ps = list(getattr(self.soil, 'plant_sprites', []).sprites()) if getattr(self, 'soil', None) is not None else []
+                if ps:
+                    if pos:
+                        # compute pixel distance to nearest plant
+                        px, py = self.player.rect.center
+                        min_dist = min(((pp.rect.center[0] - px) ** 2 + (pp.rect.center[1] - py) ** 2) ** 0.5 for pp in ps)
+                        thresh = max(self.window_size) if getattr(self, 'window_size', None) is not None else 800
+                        if min_dist > thresh:
+                            _logger.debug('load_from_payload: saved player pos is far (%.1f px) from nearest plant; centering on first plant', min_dist)
+                            p0 = ps[0]
+                            try:
+                                self.player.rect.center = p0.rect.center
+                                try:
+                                    self.player.hitbox.center = self.player.rect.center
+                                except Exception:
+                                    pass
+                            except Exception:
+                                pass
+                    else:
+                        # no saved pos: center on first plant
+                        p0 = ps[0]
+                        try:
+                            self.player.rect.center = p0.rect.center
+                            try:
+                                self.player.hitbox.center = self.player.rect.center
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
+            except Exception:
+                _logger.exception('load_from_payload: failed to restore player position or center on plants')
+        except Exception:
+            _logger.exception('load_from_payload: unexpected error during load')
