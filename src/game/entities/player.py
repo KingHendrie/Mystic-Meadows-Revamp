@@ -41,6 +41,11 @@ class Player(pygame.sprite.Sprite):
             pygame.draw.rect(self.image, (255, 0, 255), self.image.get_rect())
         else:
             self.image = surf
+        # keep an unmodified base image for flipping/animation
+        try:
+            self.base_image = self.image.copy()
+        except Exception:
+            self.base_image = self.image
         self.rect = self.image.get_rect(center=(int(self.x), int(self.y)))
         self.hitbox = self.rect.copy()
         self.hitbox.inflate_ip(-8, -8)
@@ -71,7 +76,7 @@ class Player(pygame.sprite.Sprite):
         if dx != 0 and dy != 0:
             dx *= 0.7071
             dy *= 0.7071
-        # Attempt movement with collision resolution
+    # Attempt movement with collision resolution
         nx = self.x + dx * self.speed * dt
         ny = self.y + dy * self.speed * dt
 
@@ -112,6 +117,18 @@ class Player(pygame.sprite.Sprite):
             # revert y
             self.rect.centery = int(self.y)
             self.hitbox.centery = self.rect.centery
+
+        # update facing/direction for simple sprite flip
+        try:
+            if dx < 0:
+                # facing left
+                self.facing = "left"
+                self.image = pygame.transform.flip(self.base_image, True, False)
+            elif dx > 0:
+                self.facing = "right"
+                self.image = self.base_image
+        except Exception:
+            pass
 
     def use_tool_till(self, soil, tx: int, ty: int) -> bool:
         return soil.till(tx, ty)

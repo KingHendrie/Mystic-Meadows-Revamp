@@ -81,23 +81,43 @@ class Farm:
         grid_h = window_size[1] // tile_size
         self.soil = SoilLayer(self.all_sprites, self.collision_sprites, tile_size, (grid_w, grid_h))
 
-        # create simple ground tiles so the map is visible without TMX
+        # Try to render the authored TMX map as a single combined surface (no layering required)
         try:
-            # attempt to load a ground tile from assets
-            ground_path = self.assets_dir / "sprites" / "world" / "ground.png"
-            if ground_path.exists():
-                ground_surf = pygame.image.load(str(ground_path)).convert_alpha()
-                ground_surf = pygame.transform.scale(ground_surf, (tile_size, tile_size))
+            try:
+                from pytmx.util_pygame import load_pygame
+            except Exception:
+                load_pygame = None
+            map_file = self.data_dir / "map.tmx"
+            if load_pygame is not None and map_file.exists():
+                tmx = load_pygame(str(map_file))
+                map_w = tmx.width * tmx.tilewidth
+                map_h = tmx.height * tmx.tileheight
+                map_surf = pygame.Surface((map_w, map_h), pygame.SRCALPHA)
+                for layer in tmx.layers:
+                    if getattr(layer, "tiles", None) is None:
+                        continue
+                    for x, y, gid in layer.tiles():
+                        tile = tmx.get_tile_image_by_gid(gid)
+                        if tile:
+                            map_surf.blit(tile, (x * tmx.tilewidth, y * tmx.tileheight))
+                # add the combined map surface as a single sprite
+                Generic((0, 0), map_surf, (self.all_sprites,), z=0)
             else:
-                ground_surf = None
-            for x in range(grid_w):
-                for y in range(grid_h):
-                    if ground_surf is not None:
-                        surf = ground_surf
-                    else:
-                        surf = pygame.Surface((tile_size, tile_size))
-                        surf.fill((100, 180, 90))
-                    Generic((x * tile_size, y * tile_size), surf, (self.all_sprites,), z=1)
+                # create simple ground tiles so the map is visible without TMX
+                ground_path = self.assets_dir / "sprites" / "world" / "ground.png"
+                if ground_path.exists():
+                    ground_surf = pygame.image.load(str(ground_path)).convert_alpha()
+                    ground_surf = pygame.transform.scale(ground_surf, (tile_size, tile_size))
+                else:
+                    ground_surf = None
+                for x in range(grid_w):
+                    for y in range(grid_h):
+                        if ground_surf is not None:
+                            surf = ground_surf
+                        else:
+                            surf = pygame.Surface((tile_size, tile_size))
+                            surf.fill((100, 180, 90))
+                        Generic((x * tile_size, y * tile_size), surf, (self.all_sprites,), z=1)
         except Exception:
             pass
 
