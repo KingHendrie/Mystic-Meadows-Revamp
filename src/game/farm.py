@@ -15,6 +15,9 @@ from pygame.sprite import Group, Sprite
 from src.game.config import DEFAULT_TILE_SIZE, DEFAULT_WINDOW_SIZE
 from src.game.soil import SoilLayer
 from src.game.entities.player import Player
+from src.game.systems.save_system import SaveSystem
+from src.game.ui.menu import Menu
+from src.game.transition import Transition
 
 _logger = logging.getLogger("mystic_meadows.farm")
 
@@ -56,6 +59,20 @@ class Farm:
         self.player = Player(id="player", x=px, y=py)
         self.all_sprites.add(self.player)
 
+        # Menu (shop) and transition controller
+        self.menu = Menu(self.player, self.toggle_shop)
+        self._tab_prev = False
+        self._n_prev = False
+
+        # Transition for day advance
+        self.transition = Transition(window_size, on_day_advance=self._on_day_advance)
+
+        # Save system
+        try:
+            self.save_system = SaveSystem(self.data_dir)
+        except Exception:
+            self.save_system = None
+
         # Soil grid: compute grid size based on window size
         grid_w = window_size[0] // tile_size
         grid_h = window_size[1] // tile_size
@@ -83,6 +100,42 @@ class Farm:
             _logger.debug("Audio unavailable or failed to initialize")
 
     def update(self, dt: float, keys):
+        # shop modal handling: if menu active, only update menu
+        if self.menu.active:
+            # allow toggle key to close via edge detection
+            try:
+                tab_pressed = keys[pygame.K_TAB]
+            except Exception:
+                tab_pressed = False
+            if tab_pressed and not self._tab_prev:
+                self.toggle_shop(False)
+            self._tab_prev = tab_pressed
+            # let menu handle input
+            try:
+                self.menu.update()
+            except Exception:
+                pass
+            return
+
+        # Edge detect day-transition key (n) and menu key (tab)
+        try:
+            tab_pressed = keys[pygame.K_TAB]
+            n_pressed = keys[pygame.K_n]
+        except Exception:
+            tab_pressed = False
+            n_pressed = False
+
+        if tab_pressed and not self._tab_prev:
+            self.toggle_shop(True)
+        if n_pressed and not self._n_prev:
+            # start transition (which will call day advance when complete)
+            try:
+                self.transition.start()
+            except Exception:
+                pass
+        self._tab_prev = tab_pressed
+        self._n_prev = n_pressed
+
         # Update player and other sprites. Some sprites accept dt/keys, others don't.
         # Ensure the player is updated with dt and keys.
         try:
@@ -110,6 +163,12 @@ class Farm:
                     except Exception:
                         pass
 
+        # update transition
+        try:
+            self.transition.update(dt)
+        except Exception:
+            pass
+
     def render(self, surface: pygame.Surface):
         self.all_sprites.custom_draw(self.player, surface)
         # simple HUD
@@ -117,6 +176,24 @@ class Farm:
             font = pygame.font.Font(None, 24)
             txt = font.render(f"Day: {self.day}  Money: {self.player.money}", True, (255,255,255))
             surface.blit(txt, (8,8))
+        except Exception:
+            pass
+
+        # draw menu overlay if active
+        try:
+            if self.menu.active:
+                font = pygame.font.Font(None, 32)
+                overlay = pygame.Surface((200, 150), pygame.SRCALPHA)
+                overlay.fill((0,0,0,180))
+                surface.blit(overlay, (50, 50))
+                surface.blit(font.render("Shop - 1: Corn (5)", True, (255,255,255)), (60, 60))
+                surface.blit(font.render("2: Tomato (7)", True, (255,255,255)), (60, 100))
+        except Exception:
+            pass
+
+        # draw transition on top if running
+        try:
+            self.transition.draw(surface)
         except Exception:
             pass
 
@@ -141,3 +218,44 @@ class Farm:
         if self.soil.raining:
             self.soil.water_all()
         self.day += 1
+
+    def _on_day_advance(self):
+        # Called by transition when day advance is requested
+        try:
+            self.reset_day()
+        except Exception:
+            pass
+
+        # perform quick-save of essential state
+        if getattr(self, "save_system", None) is not None:
+            try:
+                state = {
+                    "day": self.day,
+                    "player": {
+                        "money": getattr(self.player, "money", 0),
+                        "inventory": getattr(self.player, "inventory", getattr(self.player, "item_inventory", {})),
+                    },
+                    "plants": [
+                        {"x": p.rect.x // self.tile_size, "y": p.rect.y // self.tile_size, "type": getattr(p, "plant_type", None), "growth_stage": getattr(p, "growth_stage", 0)}
+                        for p in list(self.soil.plant_sprites.sprites())
+                    ],
+                }
+                try:
+                    self.save_system.auto_save(state, slot=self.day)
+                except Exception:
+                    # fallback to default slot 1
+                    try:
+                        self.save_system.auto_save(state)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+    def toggle_shop(self, on: bool):
+        try:
+            if on:
+                self.menu.open()
+            else:
+                self.menu.close()
+        except Exception:
+            pass
