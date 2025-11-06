@@ -15,7 +15,7 @@ from pygame.sprite import Group, Sprite
 from src.game.config import DEFAULT_TILE_SIZE, DEFAULT_WINDOW_SIZE
 from src.game.soil import SoilLayer
 from src.game.entities.player import Player
-from src.game.sprites import Generic, Tree, Interaction
+from src.game.sprites import Generic, Tree, Interaction, Water, WildFlower
 from src.game.systems.save_system import SaveSystem
 from src.game.ui.menu import Menu
 from src.game.ui.hud import HUD
@@ -93,7 +93,7 @@ class Farm:
         grid_h = window_size[1] // tile_size
         self.soil = SoilLayer(self.all_sprites, self.collision_sprites, tile_size, (grid_w, grid_h))
 
-        # Try to render the authored TMX map as a single combined surface (no layering required)
+        # Try to load authored TMX map with layer-aware sprite creation (preferred)
         try:
             try:
                 from pytmx.util_pygame import load_pygame
@@ -102,79 +102,130 @@ class Farm:
             map_file = self.data_dir / "map.tmx"
             if load_pygame is not None and map_file.exists():
                 tmx = load_pygame(str(map_file))
-                map_w = tmx.width * tmx.tilewidth
-                map_h = tmx.height * tmx.tileheight
-                map_surf = pygame.Surface((map_w, map_h), pygame.SRCALPHA)
-                for layer in tmx.layers:
-                    if getattr(layer, "tiles", None) is None:
-                        continue
-                    for x, y, gid in layer.tiles():
-                        tile = tmx.get_tile_image_by_gid(gid)
-                        if tile:
-                            map_surf.blit(tile, (x * tmx.tilewidth, y * tmx.tileheight))
-                # add the combined map surface as a single sprite
-                Generic((0, 0), map_surf, (self.all_sprites,), z=0)
+                tile_w = tmx.tilewidth
+                tile_h = tmx.tileheight
 
-                # parse object layers to place interactive objects and player
+                # try to import layer z mapping from data config if available
                 try:
-                    for obj in tmx.objects:
-                        name = getattr(obj, "name", "") or ""
-                        otype = getattr(obj, "type", "") or ""
-                        nx = int(obj.x)
-                        ny = int(obj.y)
-                        lname = name.lower()
-                        ltype = otype.lower()
-                        if lname in ("player", "start", "player_start") or ltype == "player":
-                            # Place player at object coordinate
-                            try:
-                                self.player.x = nx
-                                self.player.y = ny
-                                self.player.rect.center = (nx, ny)
-                                self.player.hitbox.center = self.player.rect.center
-                            except Exception:
-                                pass
-                        elif lname in ("bed",) or ltype == "bed":
-                            # create interaction sprite for bed
-                            try:
-                                w = int(getattr(obj, "width", 32))
-                                h = int(getattr(obj, "height", 32))
-                                Interaction((nx, ny), (w, h), "Bed", (self.all_sprites, self.interaction_sprites), z=5)
-                            except Exception:
-                                pass
-                        elif lname in ("trader", "shop") or ltype in ("trader", "shop"):
-                            try:
-                                w = int(getattr(obj, "width", 32))
-                                h = int(getattr(obj, "height", 32))
-                                Interaction((nx, ny), (w, h), "Trader", (self.all_sprites, self.interaction_sprites), z=5)
-                            except Exception:
-                                pass
-                        elif lname in ("tree",) or ltype == "tree":
-                            try:
-                                # create tree; align so its bottom is at obj.y
-                                tree = None
-                                tree = Tree((nx, ny - 48), None, (self.all_sprites, self.tree_sprites, self.collision_sprites), name="Tree", player_add=getattr(self.player, "player_add", None), z=3)
-                                # optionally spawn an apple immediately sometimes
-                                import random
-                                if random.random() < 0.2:
-                                    # try to load apple image
-                                    apple_path = self.assets_dir / "sprites" / "fruit" / "apple.png"
-                                    if apple_path.exists():
-                                        a_surf = pygame.image.load(str(apple_path)).convert_alpha()
-                                    else:
-                                        a_surf = pygame.Surface((8, 8), pygame.SRCALPHA)
-                                        pygame.draw.circle(a_surf, (200, 0, 0), (4, 4), 4)
-                                    a = tree.spawn_apple(a_surf)
-                                    try:
-                                        # add apple to all_sprites so it is visible
-                                        self.all_sprites.add(a)
-                                    except Exception:
-                                        pass
-                            except Exception:
-                                pass
+                    from data.config.settings import LAYERS as TMX_LAYERS
+                except Exception:
+                    TMX_LAYERS = {
+                        'water': 0,
+                        'ground': 1,
+                        'soil': 2,
+                        'soil water': 3,
+                        'rain floor': 4,
+                        'house bottom': 5,
+                        'ground plant': 6,
+                        'main': 7,
+                        'house top': 8,
+                        'fruit': 9,
+                        'rain drops': 10
+                    }
+
+                from src.game.resources.resource_manager import import_folder
+
+                # helper to safely fetch a layer
+                def layer_tiles(name):
+                    try:
+                        layer = tmx.get_layer_by_name(name)
+                        return layer.tiles()
+                    except Exception:
+                        return []
+
+                # House and furniture layers
+                for layer_name in ('HouseFloor', 'HouseFurnitureBottom'):
+                    try:
+                        for x, y, surf in tmx.get_layer_by_name(layer_name).tiles():
+                            Generic((x * tile_w, y * tile_h), surf, (self.all_sprites,), z=TMX_LAYERS.get('house bottom', 5))
+                    except Exception:
+                        pass
+
+                for layer_name in ('HouseWalls', 'HouseFurnitureTop'):
+                    try:
+                        for x, y, surf in tmx.get_layer_by_name(layer_name).tiles():
+                            Generic((x * tile_w, y * tile_h), surf, (self.all_sprites,), z=TMX_LAYERS.get('house top', 8))
+                    except Exception:
+                        pass
+
+                # Fence -> collision
+                try:
+                    for x, y, surf in tmx.get_layer_by_name('Fence').tiles():
+                        Generic((x * tile_w, y * tile_h), surf, (self.all_sprites, self.collision_sprites), z=TMX_LAYERS.get('main', 7))
+                except Exception:
+                    pass
+
+                # Water -> animated tiles
+                try:
+                    water_frames = import_folder(self.assets_dir / 'sprites' / 'water')
+                    for x, y, surf in tmx.get_layer_by_name('Water').tiles():
+                        Water((x * tile_w, y * tile_h), water_frames, (self.all_sprites,), z=TMX_LAYERS.get('water', 0))
+                except Exception:
+                    pass
+
+                # Trees (object layer)
+                try:
+                    for obj in tmx.get_layer_by_name('Trees'):
+                        try:
+                            nx = int(obj.x)
+                            ny = int(obj.y)
+                            Tree((nx - 0, ny - tile_h), getattr(obj, 'image', None), (self.all_sprites, self.collision_sprites, self.tree_sprites), name=getattr(obj, 'name', 'Tree'), player_add=getattr(self.player, 'player_add', None), z=TMX_LAYERS.get('main', 7))
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # Decoration
+                try:
+                    for obj in tmx.get_layer_by_name('Decoration'):
+                        try:
+                            WildFlower((int(obj.x), int(obj.y)), getattr(obj, 'image', None), (self.all_sprites,))
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # Collision tiles
+                try:
+                    for x, y, surf in tmx.get_layer_by_name('Collision').tiles():
+                        Generic((x * tile_w, y * tile_h), pygame.Surface((tile_w, tile_h)), (self.collision_sprites,))
+                except Exception:
+                    pass
+
+                # Player and object placements
+                try:
+                    for obj in tmx.get_layer_by_name('Player'):
+                        try:
+                            name = getattr(obj, 'name', '') or ''
+                            nx = int(obj.x)
+                            ny = int(obj.y)
+                            if name in ('Start', 'Player', 'player', 'start'):
+                                try:
+                                    self.player.x = nx
+                                    self.player.y = ny
+                                    self.player.rect.center = (nx, ny)
+                                    self.player.hitbox.center = self.player.rect.center
+                                except Exception:
+                                    pass
+                            elif name == 'Bed':
+                                Interaction((nx, ny), (int(getattr(obj, 'width', tile_w)), int(getattr(obj, 'height', tile_h))), 'Bed', (self.all_sprites, self.interaction_sprites), z=TMX_LAYERS.get('main', 7))
+                            elif name in ('Trader', 'Shop'):
+                                Interaction((nx, ny), (int(getattr(obj, 'width', tile_w)), int(getattr(obj, 'height', tile_h))), 'Trader', (self.all_sprites, self.interaction_sprites), z=TMX_LAYERS.get('main', 7))
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # Background ground tile (single sprite)
+                try:
+                    ground_path = self.assets_dir / 'sprites' / 'world' / 'ground.png'
+                    if ground_path.exists():
+                        ground_surf = pygame.image.load(str(ground_path)).convert_alpha()
+                        Generic((0, 0), ground_surf, (self.all_sprites,), z=TMX_LAYERS.get('ground', 1))
                 except Exception:
                     pass
             else:
-                # create simple ground tiles so the map is visible without TMX
+                # fallback: create simple ground tiles so the map is visible without TMX
                 ground_path = self.assets_dir / "sprites" / "world" / "ground.png"
                 if ground_path.exists():
                     ground_surf = pygame.image.load(str(ground_path)).convert_alpha()
@@ -249,6 +300,18 @@ class Farm:
         except Exception:
             tab_pressed = False
             n_pressed = False
+
+        # debug: grant seeds/money for quick testing (F1)
+        try:
+            if keys[pygame.K_F1]:
+                try:
+                    self.player.inventory['corn'] = self.player.inventory.get('corn', 0) + 5
+                    self.player.inventory['tomato'] = self.player.inventory.get('tomato', 0) + 5
+                    self.player.money = getattr(self.player, 'money', 0) + 100
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
         if tab_pressed and not self._tab_prev:
             self.toggle_shop(True)
