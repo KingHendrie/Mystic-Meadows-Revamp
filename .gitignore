@@ -1,0 +1,57 @@
+# Mystic Meadows repository .gitignore
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+venv.bak/
+
+# Editor/IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Mypy / caches
+.mypy_cache/
+
+# Logs
+*.log
+
+# Runtime data (persistent folder is tracked, but runtime saves/caches should not be)
+# Keep `data/` tracked, but ignore user/runtime files that must not be committed.
+data/saves/
+data/saves/*
+data/cache/
+data/cache/*
+
+# Temporary and backup files
+*.tmp
+*.bak
+*.swp
+
+# Local environment / secrets
+.env
+.local
